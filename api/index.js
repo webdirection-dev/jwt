@@ -4,6 +4,10 @@ const jwt = require('jsonwebtoken')
 const app = express()
 app.use(express.json())
 
+let refreshTokensArr = []
+const privateKey = 'mySecretKey'
+const refreshKey = 'myRefreshSecretKey'
+
 const users = [
     {
         id: '1',
@@ -19,25 +23,25 @@ const users = [
     },
 ]
 
-const privateKey = 'mySecretKey'
+const generateAccessToken = (user) => {
 
-app.post('/api/login', async (req, res) => {
-    const {username: u, password: p} = req.body
-    const user = users.find(i => i.username === u && i.password === p)
-    const {id, username, password, isAdmin} = user
+    const {id, isAdmin} = user
+    return jwt.sign(
+        {id, isAdmin},
+        privateKey,
+        {expiresIn: '15m'} // токен действителен 15мин.
+    )
 
-    const payload = {id, isAdmin}
+}
+const generateRefreshToken = (user) => {
+    const {id, isAdmin} = user
+    return jwt.sign(
+        {id, isAdmin},
+        refreshKey,
+    )
+}
 
-    if (user) {
-        //Generate access token
-        const accessToken = await jwt.sign(payload, privateKey)
-        return res.json({username, isAdmin, accessToken})
-    }
-
-    return res.status(400).json('Username or password incorrect!')
-})
-
-//готовим verify - функцию middleware 
+//готовим verify - функцию middleware
 const verify = (req, res, next) => {
     const authHeader = req.headers.authorization
 
@@ -54,6 +58,59 @@ const verify = (req, res, next) => {
         return res.status(401).json('You are not authenticated!')
     }
 }
+
+app.post('/api/login', async (req, res) => {
+    const {username, password} = req.body
+    const user = users.find(i => i.username === username && i.password === password)
+
+    if (user) {
+        //Generate access token
+        const accessToken = await generateAccessToken(user)
+        const refreshToken = await generateRefreshToken(user)
+        refreshTokensArr.push(refreshToken)
+
+        return res.json({
+            username: user.username,
+            isAdmin: user.isAdmin,
+            accessToken,
+            refreshToken,
+        })
+    }
+
+    return res.status(400).json('Username or password incorrect!')
+})
+
+app.post('/api/logout', verify, async (req, res) => {
+    const refreshToken = req.body.token
+    refreshTokensArr = refreshTokensArr.filter(i => i !== refreshToken)
+    res.status(200).json('You logged out successfully.')
+})
+
+app.post('/api/refresh', (req, res) => {
+    //take the refresh token from the user
+    const refreshToken = req.body.token
+
+    //send error if there is no token or it`s invalid
+    if (!refreshToken) return res.status(401).json('You are not authenticated!')
+    if (!refreshTokensArr.includes(refreshToken)) return res.status(403).json('Refresh token is not valid!')
+
+    jwt.verify(refreshToken, refreshKey, (err, user) => {
+        err && console.log(err)
+        refreshTokensArr = refreshTokensArr.filter(i => i !== refreshToken)
+
+        const newAccessToken = generateAccessToken(user)
+        const newRefreshToken = generateRefreshToken(user)
+
+        refreshTokensArr.push(newRefreshToken)
+
+        return res.status(200).json({
+            accessToken: newAccessToken,
+            refreshToken: newRefreshToken,
+        })
+    })
+
+    //if everything is ok, create new access token, refresh token and send to user
+})
 
 app.delete('/api/users/:userId', verify, (req, res) => {
     if (req.user.id === req.params.userId || req.user.isAdmin) {
